@@ -1,27 +1,31 @@
+import 'dart:convert';
 import 'dart:developer';
+
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
-import 'package:chat1/page/chatpage.dart';
+import 'package:http/http.dart' as http;
+
 import 'package:firebase_core/firebase_core.dart';
 import 'package:firebase_messaging/firebase_messaging.dart';
 import 'package:flutter_local_notifications/flutter_local_notifications.dart';
-import 'firebase_options.dart';
-import 'package:http/http.dart' as http;
-// --dart-define으로 전달된 값 읽어오기
-const String userId = String.fromEnvironment('USER_ID', defaultValue: 'sender');
 
-final FlutterLocalNotificationsPlugin flutterLocalNotificationsPlugin =
-FlutterLocalNotificationsPlugin();
+import 'firebase_options.dart'; // chat 프로젝트에서 가져오기
+import 'package:chat1/model/menuitem.dart';
+import 'package:chat1/page/menupage.dart';
+import 'package:chat1/page/cartpage.dart';
+import 'package:chat1/page/paymentpage.dart';
+import 'package:chat1/page/paymentcompletepage.dart';
+import 'page/chatpage.dart'; // chat 프로젝트에서 가져오기
 
+const String userId = String.fromEnvironment('USER_ID', defaultValue: 'receiver');
+final FlutterLocalNotificationsPlugin flutterLocalNotificationsPlugin = FlutterLocalNotificationsPlugin();
 final GlobalKey<NavigatorState> navigatorKey = GlobalKey<NavigatorState>();
 
-/// 백그라운드 메시지 수신 처리
 Future<void> _firebaseMessagingBackgroundHandler(RemoteMessage message) async {
   await Firebase.initializeApp(options: DefaultFirebaseOptions.currentPlatform);
   _showNotification(message);
 }
 
-/// 알림 표시 함수
 void _showNotification(RemoteMessage message) {
   RemoteNotification? notification = message.notification;
   AndroidNotification? android = message.notification?.android;
@@ -47,64 +51,178 @@ void _showNotification(RemoteMessage message) {
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
 
-  log("🧑‍💻 USER_ID: $userId");
-
-  await Firebase.initializeApp(
-    options: DefaultFirebaseOptions.currentPlatform,
-  );
+  if (kIsWeb) {
+    await Firebase.initializeApp(
+      options: const FirebaseOptions(
+        apiKey: "AIzaSyDaVvezeNjB9n9b4cWgBBZI0Fg1Ib3Qxu8",
+        authDomain: "cart-ab0f6.firebaseapp.com",
+        projectId: "cart-ab0f6",
+        storageBucket: "cart-ab0f6.firebasestorage.app",
+        messagingSenderId: "929235912304",
+        appId: "1:929235912304:web:1f93b5babd464affcd56b5",
+        measurementId: "G-KFLJK3NGJP",
+      ),
+    );
+  } else {
+    await Firebase.initializeApp(options: DefaultFirebaseOptions.currentPlatform);
+  }
 
   FirebaseMessaging.onBackgroundMessage(_firebaseMessagingBackgroundHandler);
 
-  // Android 알림 채널 초기화
-  const initializationSettingsAndroid =
-  AndroidInitializationSettings('@mipmap/ic_launcher');
-
-  const initializationSettings = InitializationSettings(
-    android: initializationSettingsAndroid,
-  );
-
+  const initializationSettingsAndroid = AndroidInitializationSettings('@mipmap/ic_launcher');
+  const initializationSettings = InitializationSettings(android: initializationSettingsAndroid);
   await flutterLocalNotificationsPlugin.initialize(initializationSettings);
-  FirebaseMessaging.instance.getToken().then((token) {
-    if (token != null) {
-      final url = Uri.parse('http://10.0.2.2:8080/api/token');
-      http.post(url, body: {
-        'userId': userId,
-        'token': token,
-      });
-    }
-  });
-  // 알림 권한 요청
-  final messaging = FirebaseMessaging.instance;
-  final settings = await messaging.requestPermission(
+
+  final token = await FirebaseMessaging.instance.getToken();
+  log("🔑 FCM Token: $token");
+
+  if (token != null) {
+    final url = Uri.parse('http://10.0.2.2:8080/api/token');
+    http.post(url, body: {'userId': userId, 'token': token});
+  }
+
+  final settings = await FirebaseMessaging.instance.requestPermission(
     alert: true,
     badge: true,
     sound: true,
   );
 
   log('🔔 알림 권한 상태: ${settings.authorizationStatus}');
-  final token = await FirebaseMessaging.instance.getToken();
-  log("🔑 FCM Token: $token");
 
   FirebaseMessaging.onMessage.listen((RemoteMessage message) {
-    // 여기서 푸시 알림을 표시하지 않으면 포그라운드에서는 푸시가 안 뜸
-    // 하지만 WebSocket으로는 이미 메시지를 받고 있으므로 UI에는 뜸
-    debugPrint('포그라운드 상태이므로 푸시 알림 표시 안함. 메시지: ${message.data}');
+    debugPrint('포그라운드 푸시 수신: ${message.data}');
   });
+
   runApp(MyApp());
 }
 
-class MyApp extends StatelessWidget {
+class MyApp extends StatefulWidget {
+  @override
+  _MyAppState createState() => _MyAppState();
+}
+
+class _MyAppState extends State<MyApp> {
+  List<MenuItem> cart = [];
+  bool isTakeOut = false;
+  String request = '';
+
+  void _addToCart(MenuItem item) {
+    setState(() {
+      final existing = cart.firstWhere(
+            (e) => e.name == item.name,
+        orElse: () => MenuItem(name: '', price: 0),
+      );
+      if (existing.name.isEmpty) {
+        cart.add(item);
+      } else {
+        existing.quantity += item.quantity;
+      }
+    });
+  }
+
+  void _updateItem(MenuItem item, String details, int quantity) {
+    setState(() {
+      item.details = details;
+      item.quantity = quantity;
+    });
+  }
+
+  void _clearCart() {
+    setState(() => cart.clear());
+  }
+
+  void _goToCart() {
+    navigatorKey.currentState!.push(
+      MaterialPageRoute(
+        builder: (_) => CartPage(
+          cart: cart,
+          onUpdate: _updateItem,
+          onNext: () {
+            navigatorKey.currentState!.push(
+              MaterialPageRoute(
+                builder: (_) => PaymentPage(
+                  total: cart.fold(0, (sum, e) => sum + e.price * e.quantity),
+                  isTakeOut: isTakeOut,
+                  request: request,
+                  onTakeOutChanged: (val) => setState(() => isTakeOut = val),
+                  onRequestChanged: (val) => setState(() => request = val),
+                  onConfirm: () async {
+                    final orderData = {
+                      'items': cart.map((e) => {
+                        'name': e.name,
+                        'price': e.price,
+                        'quantity': e.quantity,
+                        'details': e.details,
+                      }).toList(),
+                      'total': cart.fold(0, (sum, e) => sum + e.price * e.quantity),
+                      'isTakeOut': isTakeOut,
+                      'request': request,
+                    };
+
+                    try {
+                      final response = await http.post(
+                        Uri.parse('http://10.0.2.2:8080/order'),
+                        headers: {'Content-Type': 'application/json'},
+                        body: jsonEncode(orderData),
+                      );
+
+                      if (response.statusCode == 200) {
+                        _clearCart();
+                        navigatorKey.currentState!.pushReplacement(
+                          MaterialPageRoute(builder: (_) => PaymentCompletePage()),
+                        );
+                      } else {
+                        showDialog(
+                          context: navigatorKey.currentContext!,
+                          builder: (_) => AlertDialog(
+                            title: Text('오류'),
+                            content: Text('서버에 요청을 전송하지 못했습니다.'),
+                            actions: [TextButton(onPressed: () => Navigator.pop(_), child: Text('확인'))],
+                          ),
+                        );
+                      }
+                    } catch (e) {
+                      print('예외 발생: $e');
+                    }
+                  },
+                ),
+              ),
+            );
+          },
+        ),
+      ),
+    );
+  }
+
+  void _goToChat() {
+    final receiverId = userId == 'sender' ? 'receiver' : 'sender';
+    navigatorKey.currentState!.push(
+      MaterialPageRoute(
+        builder: (_) => ChatPage(senderId: userId, receiverId: receiverId),
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
-    // 사용자 ID가 sender이면 receiver를, 반대라면 sender를 설정
-    final receiverId = userId == 'sender' ? 'receiver' : 'sender';
-
     return MaterialApp(
       navigatorKey: navigatorKey,
       debugShowCheckedModeBanner: false,
-      home: ChatPage(
-        senderId: userId,
-        receiverId: receiverId,  // senderId와 receiverId를 다르게 설정
+      home: Scaffold(
+        appBar: AppBar(
+          title: Text('메뉴'),
+          actions: [
+            IconButton(
+              icon: Icon(Icons.chat_bubble_outline),
+              onPressed: _goToChat,
+              tooltip: '채팅하기',
+            ),
+          ],
+        ),
+        body: MenuPage(
+          onAdd: _addToCart,
+          onGoToCart: _goToCart,
+        ),
       ),
     );
   }
